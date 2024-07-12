@@ -13,8 +13,10 @@ mascara3: times 4 dd 0x03
 mascara255: times 16 db 0xFF
 
 ; vamos a usar estas mascaras para comparar Y para restar/sumar
-; cuando comparemos, con greater, podemos comparar contra +1 y hacerle XOR, asi que aca en realidad guardamos
-; los extremos - 1 y le hacemos INC a eso cuando tengamos que usar la mascara con el valor posta
+; cuando comparemos, el extremo inferior no nos importa hacerle greater a un cierto valor + 1 porque son =< 
+; pero nos queda comodo para el extremo superior comparar con el valor - 1 y despues hacerle XOR para saber si el
+; original era menor
+; cuando queramos el valor posta para sumar o restas le hacemos INC
 ; aparte
 ; le sumamos 128 a todos los que NO sean 128 porque PCMPGTB usa signed, se nos rompe todo sino en 8 bits,
 ; sumamos aca y a las temps, con eso no deberiamos tener problema de wrap around
