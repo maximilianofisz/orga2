@@ -8,9 +8,17 @@ mascaraPonerAlpha: times 4 dd 0xFF000000
 mascaraSacarAlpha: times 4 dd 0x00FFFFFF 
 
 
-mascara1:   times 16 db 1 
-mascara3: times 4 dd 0x3
-mascara255: times 16 db 0xFF 
+mascara1:   times 16 db 0x01 
+mascara3: times 4 dd 0x03
+mascara255: times 16 db 0xFF
+
+; vamos a usar estas mascaras para comparar Y para restar/sumar
+; cuando comparemos, con greater, podemos comparar contra +1 y hacerle XOR, asi que aca en realidad guardamos
+; los extremos - 1 y le hacemos INC a eso cuando tengamos que usar la mascara con el valor posta
+; aparte
+; le sumamos 128 a todos los que NO sean 128 porque PCMPGTB usa signed, se nos rompe todo sino en 8 bits,
+; sumamos aca y a las temps, con eso no deberiamos tener problema de wrap around
+
 mascara32:  times 16 db (0x1F + 0x80) 
 mascara96:  times 16 db (0x5F + 0x80) 
 mascara128: times 16 db 0x80 
@@ -23,6 +31,7 @@ mascaraFullF: times 4 dd 0xFFFFFFFF
 mascaraSelecRojo: times 4 dd 0x00FF0000
 mascaraSelecVerde: times 4 dd 0x0000FF00
 mascaraSelecAzul: times 4 dd 0x000000FF
+; y alpha los dos primeros
 
 mascaraT: times 2 dd 0x00000000, 0x01010101 
 
@@ -34,19 +43,18 @@ temperature_asm:
     
     ; cargamos todo lo que podamos de antemano
     
-    movdqu xmm11, [mascara3]
-    movdqu xmm8, [mascaraT]
-    movdqu xmm9, [mascaraFullF]
-    movdqu xmm10, [mascaraSacarAlpha]
+    movdqu xmm6, [mascara3]
+    movdqu xmm5, [mascaraT]
+    movdqu xmm4, [mascaraFullF]
+    movdqu xmm3, [mascaraSacarAlpha]
 
-    movdqu xmm12, [mascara32]
-    movdqu xmm13, [mascara96]
-    movdqu xmm14, [mascara160]
-    movdqu xmm15, [mascara224]
+    movdqu xmm10, [mascara32]
+    movdqu xmm9, [mascara96]
+    movdqu xmm8, [mascara160]
+    movdqu xmm7, [mascara224]
 
 
-
-    cvtdq2ps xmm11, xmm11 ; a float
+    cvtdq2ps xmm6, xmm6 ; a float
 
     xor r9, r9 ; usamos de puntero para ambas imagenes
 
@@ -58,253 +66,250 @@ temperature_asm:
         cmp rcx, 0 
         je exit
 
-        movq xmm0, [rdi + r9] ; cargamos 2 pixeles (quad)
+        movq xmm12, [rdi + r9] ; cargamos 2 pixeles (quad)
 
         
-        pand xmm0, xmm10 ; sacamos el alpa
+        pand xmm12, xmm3 ; sacamos el alpha
+        pmovzxbw xmm13, xmm12 ; extendemos a words
+
+        phaddw xmm13, xmm13 ; Hacemmos las sumas horizontales para sacar el t
+        phaddw xmm13, xmm13
+
+        pmovzxwd xmm13, xmm13 ; extendemos a double word 
 
 
-        pmovzxbw xmm1, xmm0 ; extendemos a words
+        cvtdq2ps xmm13, xmm13 ; a float para divir
+        divps xmm13, xmm6 ; /3
 
+        cvttps2dq xmm13, xmm13  ; a entero de vuelta
 
-        phaddw xmm1, xmm1 ; Hacemmos las sumas horizontales para sacar el t
-        phaddw xmm1, xmm1
+        packssdw xmm13, xmm13  ; de 32 a 8 bits
+        packuswb xmm13, xmm13  
 
-        
-        pmovzxwd xmm1, xmm1 ; extendemos a double word 
+        pshufb xmm13, xmm5 ; acomodamos los ts como t0t0t0t0 y t1t1t1t1
 
-
-        cvtdq2ps xmm1, xmm1 ; a float para divir
-        divps xmm1, xmm11 ; 
-
-        cvttps2dq xmm1, xmm1  ; a entero de vuelta
-
-        packssdw xmm1, xmm1  ; de 32 a 8 bits
-        packuswb xmm1, xmm1  
-
-        pshufb xmm1, xmm8 ; acomodamos los ts como t0t0t0t0 y t1t1t1t1
-
-        pxor xmm7, xmm7 ; vamos a ir sumando en un registro cualquier valor que cumpla un caso, despues lo pegamos en destino    
+        pxor xmm11, xmm11 ; vamos a ir sumando en un registro cualquier valor que cumpla un caso, despues lo pegamos en destino    
 
 
         ; caso 1
-        movdqu xmm3, xmm1
+        movdqu xmm15, xmm13
 
         ; x4
-        paddb xmm3, xmm3
-        paddb xmm3, xmm3 
+        paddb xmm15, xmm15
+        paddb xmm15, xmm15 
 
         ; + 128
-        movdqu xmm5, [mascara128]
-        paddb xmm3, xmm5 ; 
+        movdqu xmm2, [mascara128]
+        paddb xmm15, xmm2 
 
         ; compare 
-        movdqu xmm2, [mascara128]
-        paddb xmm2, xmm1
-        pcmpgtb xmm2, xmm12   
-        pxor xmm2, xmm9 ; porque comparo con greater
+        movdqu xmm14, [mascara128]
+        paddb xmm14, xmm13 ; le sumo los 128 por el pcmpgtb
+        pcmpgtb xmm14, xmm10   
+        pxor xmm14, xmm4 ; porque comparo con greater
 
         ; filtramos que valores cumplen con el caso
-        pand xmm3, xmm2
-        movdqu xmm5, [mascaraSelecAzul] 
-        pand xmm3, xmm5 
+        pand xmm15, xmm14
+        movdqu xmm2, [mascaraSelecAzul] 
+        pand xmm15, xmm2 
 
         ; agregamos al resultado
-        paddb xmm7, xmm3
+        paddb xmm11, xmm15
 
 
 
         ; caso 2
-        movdqu xmm3, xmm1
+        movdqu xmm15, xmm13
 
         ; t - 32
-        movdqu xmm5, [mascara32]
-        movdqu xmm6, [mascara1]
-        paddb xmm5, xmm6
-        psubb xmm3, xmm5
+        movdqu xmm2, [mascara32]
+        movdqu xmm1, [mascara1] ; para estos casos donde no queremos comparar sino sumar le hacemos INC a todo el registro
+        paddb xmm2, xmm1
+        psubb xmm15, xmm2
 
         ; x4
-        paddb xmm3, xmm3
-        paddb xmm3, xmm3 
+        paddb xmm15, xmm15
+        paddb xmm15, xmm15 
 
         ; compare >= a 32
-        movdqu xmm2, [mascara128]
-        paddb xmm2, xmm1
-        pcmpgtb xmm2, xmm12 
+        movdqu xmm14, [mascara128]
+        paddb xmm14, xmm13 ; le sumo los 128 por el pcmpgtb
+        pcmpgtb xmm14, xmm10 
 
         ; compare < a 96
-        movdqu xmm4, [mascara128]
-        paddb xmm4, xmm1
-        pcmpgtb xmm4, xmm13 
-        pxor xmm4, xmm9 ; 
+        movdqu xmm0, [mascara128]
+        paddb xmm0, xmm13 ; le sumo los 128 por el pcmpgtb
+        pcmpgtb xmm0, xmm9 
+        pxor xmm0, xmm4 ; 
 
         ; combinamos ambas condiciones
-        pand xmm2, xmm4
-        pand xmm3, xmm2
+        pand xmm14, xmm0
 
-        ; borramos todo menos lo que esta en el vrde
-        movdqu xmm5, [mascaraSelecVerde]
-        pand xmm3, xmm5
+        ; limpiamos todo menos lo que calculamos antes y cumple el caso
+        pand xmm15, xmm14
+
+        ; borramos todo menos lo que esta en el verde
+        movdqu xmm2, [mascaraSelecVerde]
+        pand xmm15, xmm2
 
         ; ponemos 255 en azul
-        movdqu xmm5, [mascaraSelecAzul]
+        movdqu xmm2, [mascaraSelecAzul]
         ; ignorar el 255 si no corresponde
-        pand xmm5, xmm2
-        paddb xmm3, xmm5 
+        pand xmm2, xmm14
+        paddb xmm15, xmm2 
         
         ; suma suma suma
-        paddb xmm7, xmm3
+        paddb xmm11, xmm15
 
 
         ; caso 3
-        movdqu xmm3, xmm1
+        movdqu xmm15, xmm13
 
         ; t - 96
-        movdqu xmm5, [mascara96]
-        movdqu xmm6, [mascara1]
-        paddb xmm5, xmm6
-        psubb xmm3, xmm5
+        movdqu xmm2, [mascara96]
+        movdqu xmm1, [mascara1]
+        paddb xmm2, xmm1
+        psubb xmm15, xmm2
 
         ; 4x
-        paddb xmm3, xmm3
-        paddb xmm3, xmm3
+        paddb xmm15, xmm15
+        paddb xmm15, xmm15
 
         ; compare >= 96
-        movdqu xmm2, [mascara128]
-        paddb xmm2, xmm1
-        pcmpgtb xmm2, xmm13
+        movdqu xmm14, [mascara128]
+        paddb xmm14, xmm13
+        pcmpgtb xmm14, xmm9
 
         ; compare < 160
-        movdqu xmm4, [mascara128]
-        paddb xmm4, xmm1
-        pcmpgtb xmm4, xmm14
-        pxor xmm4, xmm9 
+        movdqu xmm0, [mascara128]
+        paddb xmm0, xmm13
+        pcmpgtb xmm0, xmm8
+        pxor xmm0, xmm4 
 
-        pand xmm2, xmm4 
+        pand xmm14, xmm0 
 
         ; aca necesitamos ya armar una base mas compleja
-        pxor xmm4, xmm4
-        movdqu xmm4, [mascara255]
+        pxor xmm0, xmm0
+        movdqu xmm0, [mascara255]
         
         ; el 255 del azul
-        movdqu xmm5, [mascaraSelecAzul] 
+        movdqu xmm2, [mascaraSelecAzul] 
 
         ; restamos el calculo anterior
-        psubb xmm4, xmm3 
+        psubb xmm0, xmm15 
 
         ; lo dejamos en la componente que corresponde
-        pand xmm4, xmm5   
+        pand xmm0, xmm2   
         
         ; movemos el calculo anterior a rojo que tambien necesita
-        movdqu xmm5, [mascaraSelecRojo]
-        pand xmm3, xmm5 
+        movdqu xmm2, [mascaraSelecRojo]
+        pand xmm15, xmm2 
 
         ; juntamos 
-        paddb xmm4, xmm3 ;
+        paddb xmm0, xmm15 ;
 
         ; agregamos 255 en verde
-        movdqu xmm5, [mascaraSelecVerde]
-        paddb xmm4, xmm5 
+        movdqu xmm2, [mascaraSelecVerde]
+        paddb xmm0, xmm2 
 
         ; filtramos si el caso aplica
-        pand xmm4, xmm2
+        pand xmm0, xmm14
 
 
-        paddb xmm7, xmm4 ;suma
+        paddb xmm11, xmm0 ;suma
 
 
         ; caso 4
-        movdqu xmm3, xmm1
+        movdqu xmm15, xmm13
 
         ; t - 160
-        movdqu xmm5, [mascara160]
-        movdqu xmm6, [mascara1]
-        paddb xmm5, xmm6
-        psubb xmm3, xmm5
+        movdqu xmm2, [mascara160]
+        movdqu xmm1, [mascara1]
+        paddb xmm2, xmm1
+        psubb xmm15, xmm2
 
    
-        paddb xmm3, xmm3
-        paddb xmm3, xmm3 
+        paddb xmm15, xmm15
+        paddb xmm15, xmm15 
 
         ; comapre >= 160
-        movdqu xmm2, [mascara128]
-        paddb xmm2, xmm1
-        pcmpgtb xmm2, xmm14 
+        movdqu xmm14, [mascara128]
+        paddb xmm14, xmm13
+        pcmpgtb xmm14, xmm8 
 
         ; compare < 224
-        movdqu xmm4, [mascara128]
-        paddb xmm4, xmm1
-        pcmpgtb xmm4, xmm15 
-        pxor xmm4, xmm9 
+        movdqu xmm0, [mascara128]
+        paddb xmm0, xmm13
+        pcmpgtb xmm0, xmm7 
+        pxor xmm0, xmm4 
 
-        pand xmm2, xmm4 ; juntar condiciones
+        pand xmm14, xmm0 ; juntar condiciones
 
 
-        pxor xmm4, xmm4
-        movdqu xmm4, [mascara255]
+        pxor xmm0, xmm0
+        movdqu xmm0, [mascara255]
         
         ; otra con 255 en la segunda
-        movdqu xmm5, [mascaraSelecVerde]
+        movdqu xmm2, [mascaraSelecVerde]
 
         ; le restamos el resultado
-        psubb xmm4, xmm3 
+        psubb xmm0, xmm15 
 
         ; dejamos solo esa componente
-        pand xmm4, xmm5   
+        pand xmm0, xmm2   
 
         ; ponemos a manopla el 255 del rojo
-        movdqu xmm5, [mascaraSelecRojo]
-        paddb xmm4, xmm5 
+        movdqu xmm2, [mascaraSelecRojo]
+        paddb xmm0, xmm2 
 
         ; ignorar sino cumple el caso y sumar
-        pand xmm4, xmm2
-        paddb xmm7, xmm4
+        pand xmm0, xmm14
+        paddb xmm11, xmm0
 
 
         ; caso 5
-        movdqu xmm3, xmm1
+        movdqu xmm15, xmm13
 
         ; t - 224
-        movdqu xmm5, [mascara224]
-        movdqu xmm6, [mascara1]
-        paddb xmm5, xmm6
-        psubb xmm3, xmm5
+        movdqu xmm2, [mascara224]
+        movdqu xmm1, [mascara1]
+        paddb xmm2, xmm1
+        psubb xmm15, xmm2
 
-        paddb xmm3, xmm3
-        paddb xmm3, xmm3 
+        paddb xmm15, xmm15
+        paddb xmm15, xmm15 
 
         ; compare >= 224
-        movdqu xmm2, [mascara128]
-        paddb xmm2, xmm1
-        pcmpgtb xmm2, xmm15
+        movdqu xmm14, [mascara128]
+        paddb xmm14, xmm13
+        pcmpgtb xmm14, xmm7
 
         ; base
-        pxor xmm4, xmm4
-        movdqu xmm4, [mascara255]
+        pxor xmm0, xmm0
+        movdqu xmm0, [mascara255]
         
         ; vamos a poner cosas solo en la primer componente, arrancamos con 255
-        movdqu xmm5, [mascaraSelecRojo] 
+        movdqu xmm2, [mascaraSelecRojo] 
 
         ; sub el resultado anterior
-        psubb xmm4, xmm3
+        psubb xmm0, xmm15
 
         ;dejarlo solo en el rojo
-        pand xmm4, xmm5   
+        pand xmm0, xmm2   
 
         ; ignorar si no es el caso
-        pand xmm4, xmm2 
+        pand xmm0, xmm14 
 
         ; result
-        paddb xmm7, xmm4
+        paddb xmm11, xmm0
                 
 
         ; volvemos a poner el alpha
-            
-        movdqu xmm6, [mascaraPonerAlpha]
-        paddb xmm7, xmm6
+        movdqu xmm1, [mascaraPonerAlpha]
+        paddb xmm11, xmm1
 
         ; guardar en destino con el puntero
-        movq [rsi + r9], xmm7 
+        movq [rsi + r9], xmm11 
 
         add r9, 8 ; siguientes 2 pixeles y restart
         sub rcx, 2   
