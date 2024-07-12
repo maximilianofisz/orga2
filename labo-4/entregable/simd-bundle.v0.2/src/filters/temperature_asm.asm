@@ -1,121 +1,316 @@
+global temperature_asm
+
 section .data
-mascaraMataAlpha: times 2 dd 00000000_11111111_11111111_11111111b ; deja pasar los valores de rgb de un pixel y pone en 0 el alpha. 2 pixeles a la vez
-;11111111
-;00000000
-; mascaras genericas para la funcion partida
-;               <0         0    0>   ,      < 0          0    255>   ,   <0      255       255>  , <255      255      0>,    <255      0         0>,       null
-mascaraBase: dq 00000000_00000000_00000000_00000000_00000000_11111111_00000000_11111111_11111111_11111111_11111111_00000000_11111111_00000000_00000000_00000000b
+
+; mascaras
+
+mascaraPonerAlpha: times 4 dd 0xFF000000  
+mascaraSacarAlpha: times 4 dd 0x00FFFFFF 
 
 
+mascara1:   times 16 db 1 
+mascara3: times 4 dd 0x3
+mascara255: times 16 db 0xFF 
+mascara32:  times 16 db (0x1F + 0x80) 
+mascara96:  times 16 db (0x5F + 0x80) 
+mascara128: times 16 db 0x80 
+mascara160: times 16 db (0x9F + 0x80)
+mascara224: times 16 db (0xDF + 0x80)
 
-mascaraPoneT: db 0x80, 0x80, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x80, 0x80
-;                                                        32               96                 96                160              224                          null
-mascaraResta1: dq 00000000_00000000_00000000_00000000_00100000_00000000_01100000_00000000_01100000_00000000_10100000_00000000_11100000_00000000_00000000_00000000b
-
-;                                     4                  4                4                  4                 4               4
-mascaraMult4: dq 00000000_00000000_00000011_00000000_00000011_00000000_00000011_00000000_00000011_00000000_00000011_00000000_00000011_00000000_00000000_00000000b
-
-
-
-
-
+mascaraFullF: times 4 dd 0xFFFFFFFF  
 
 
-;               <0         0    128>   , < 0          0    255>   ,   <0      255       255>  , <255      255      0>,    <255      0         0>
-;mascara1: dq 00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000_00000000b
-mascara2: dd 11111111_00000000_00000000_11111111b
-mascara3: dd 11111111_00000000_11111111_00000000b
-mascara4: dd 11111111_11111111_00000000_00000000b
-mascara5: dd 11111111_00000000_00000000_00000000b
+mascaraSelecRojo: times 4 dd 0x00FF0000
+mascaraSelecVerde: times 4 dd 0x0000FF00
+mascaraSelecAzul: times 4 dd 0x000000FF
 
+mascaraT: times 2 dd 0x00000000, 0x01010101 
 
 section .text
-global temperature_asm
-;registros y pila: src[rdi], dst[rsi], width[rdx], height[rcx], src_row_size[r8], dst_row_size[r9]
-;void temperature_asm(unsigned char *src,
-;              unsigned char *dst,
-;              int width,
-;              int height,
-;              int src_row_size,
-;              int dst_row_size);
 
 temperature_asm:
     push rbp
-    mov rbp, rsp
-    push r10
-    push r11
-    push r13
-    push r14
-    push r15
+	mov rbp, rsp 
+    
+    ; cargamos todo lo que podamos de antemano
+    
+    movdqu xmm11, [mascara3]
+    movdqu xmm8, [mascaraT]
+    movdqu xmm9, [mascaraFullF]
+    movdqu xmm10, [mascaraSacarAlpha]
 
-    movq xmm1, [mascaraMataAlpha] ; cargamos mascara una sola vez
-    movd xmm4, [mascara1]
-    movd xmm5, [mascara2]
-    movd xmm6, [mascara3]
-    movd xmm7, [mascara4]
-    movd xmm8, [mascara5]
+    movdqu xmm12, [mascara32]
+    movdqu xmm13, [mascara96]
+    movdqu xmm14, [mascara160]
+    movdqu xmm15, [mascara224]
 
 
-    mov eax, edx ; calculamos las iteraciones: (height * width) / 2
-    mul ecx 
 
-    mov ecx, 2
-    div ecx
-    mov rdx, rax 
+    cvtdq2ps xmm11, xmm11 ; a float
 
-    mov r10, rdx
+    xor r9, r9 ; usamos de puntero para ambas imagenes
+
+    imul rcx, rdx ; cantidad de iteraciones restantes
+    
 
     loop:
-    cmp r10, 0
-    je exit
 
-    movq xmm0, [rdi] ; movemos dos pixeles del src a nuestro registro de trabajo
+        cmp rcx, 0 
+        je exit
 
-    pand xmm0, xmm1 ; aplicamos la mascara mata alpha, nos quedan nuestros dos pixeles pero con alpha en 00000000
+        movq xmm0, [rdi + r9] ; cargamos 2 pixeles (quad)
 
-    pmovzxbw xmm0, xmm0 ; extendemos a word, para poder hacer sumas horizontales Y, aparte, que no haya overflow
-
-    phaddw xmm0, xmm0 ; doble suma horizontal, la suma de los componentes de los pixeles que ocupaban 64 bits post extend cada uno
-                      ; ahora esta en los ultimos 32 bit del xmm0 (16 bit para cada uno)
-
-    phaddw xmm0, xmm0
-
-    pextrw r13, xmm0, 00000000b ; extraemos el valor de sum1 a r13 (la suma de los componentes del primer pixel)
-
-    pextrw r14, xmm0, 00000001b ; extraemos el valor de sum2 a r14 (la suma de los componentes del segundo pixel)
+        
+        pand xmm0, xmm10 ; sacamos el alpa
 
 
+        pmovzxbw xmm1, xmm0 ; extendemos a words
+
+
+        phaddw xmm1, xmm1 ; Hacemmos las sumas horizontales para sacar el t
+        phaddw xmm1, xmm1
+
+        
+        pmovzxwd xmm1, xmm1 ; extendemos a double word 
+
+
+        cvtdq2ps xmm1, xmm1 ; a float para divir
+        divps xmm1, xmm11 ; 
+
+        cvttps2dq xmm1, xmm1  ; a entero de vuelta
+
+        packssdw xmm1, xmm1  ; de 32 a 8 bits
+        packuswb xmm1, xmm1  
+
+        pshufb xmm1, xmm8 ; acomodamos los ts como t0t0t0t0 y t1t1t1t1
+
+        pxor xmm7, xmm7 ; vamos a ir sumando en un registro cualquier valor que cumpla un caso, despues lo pegamos en destino    
+
+
+        ; caso 1
+        movdqu xmm3, xmm1
+
+        ; x4
+        paddb xmm3, xmm3
+        paddb xmm3, xmm3 
+
+        ; + 128
+        movdqu xmm5, [mascara128]
+        paddb xmm3, xmm5 ; 
+
+        ; compare 
+        movdqu xmm2, [mascara128]
+        paddb xmm2, xmm1
+        pcmpgtb xmm2, xmm12   
+        pxor xmm2, xmm9 ; porque comparo con greater
+
+        ; filtramos que valores cumplen con el caso
+        pand xmm3, xmm2
+        movdqu xmm5, [mascaraSelecAzul] 
+        pand xmm3, xmm5 
+
+        ; agregamos al resultado
+        paddb xmm7, xmm3
+
+
+
+        ; caso 2
+        movdqu xmm3, xmm1
+
+        ; t - 32
+        movdqu xmm5, [mascara32]
+        movdqu xmm6, [mascara1]
+        paddb xmm5, xmm6
+        psubb xmm3, xmm5
+
+        ; x4
+        paddb xmm3, xmm3
+        paddb xmm3, xmm3 
+
+        ; compare >= a 32
+        movdqu xmm2, [mascara128]
+        paddb xmm2, xmm1
+        pcmpgtb xmm2, xmm12 
+
+        ; compare < a 96
+        movdqu xmm4, [mascara128]
+        paddb xmm4, xmm1
+        pcmpgtb xmm4, xmm13 
+        pxor xmm4, xmm9 ; 
+
+        ; combinamos ambas condiciones
+        pand xmm2, xmm4
+        pand xmm3, xmm2
+
+        ; borramos todo menos lo que esta en el vrde
+        movdqu xmm5, [mascaraSelecVerde]
+        pand xmm3, xmm5
+
+        ; ponemos 255 en azul
+        movdqu xmm5, [mascaraSelecAzul]
+        ; ignorar el 255 si no corresponde
+        pand xmm5, xmm2
+        paddb xmm3, xmm5 
+        
+        ; suma suma suma
+        paddb xmm7, xmm3
+
+
+        ; caso 3
+        movdqu xmm3, xmm1
+
+        ; t - 96
+        movdqu xmm5, [mascara96]
+        movdqu xmm6, [mascara1]
+        paddb xmm5, xmm6
+        psubb xmm3, xmm5
+
+        ; 4x
+        paddb xmm3, xmm3
+        paddb xmm3, xmm3
+
+        ; compare >= 96
+        movdqu xmm2, [mascara128]
+        paddb xmm2, xmm1
+        pcmpgtb xmm2, xmm13
+
+        ; compare < 160
+        movdqu xmm4, [mascara128]
+        paddb xmm4, xmm1
+        pcmpgtb xmm4, xmm14
+        pxor xmm4, xmm9 
+
+        pand xmm2, xmm4 
+
+        ; aca necesitamos ya armar una base mas compleja
+        pxor xmm4, xmm4
+        movdqu xmm4, [mascara255]
+        
+        ; el 255 del azul
+        movdqu xmm5, [mascaraSelecAzul] 
+
+        ; restamos el calculo anterior
+        psubb xmm4, xmm3 
+
+        ; lo dejamos en la componente que corresponde
+        pand xmm4, xmm5   
+        
+        ; movemos el calculo anterior a rojo que tambien necesita
+        movdqu xmm5, [mascaraSelecRojo]
+        pand xmm3, xmm5 
+
+        ; juntamos 
+        paddb xmm4, xmm3 ;
+
+        ; agregamos 255 en verde
+        movdqu xmm5, [mascaraSelecVerde]
+        paddb xmm4, xmm5 
+
+        ; filtramos si el caso aplica
+        pand xmm4, xmm2
+
+
+        paddb xmm7, xmm4 ;suma
+
+
+        ; caso 4
+        movdqu xmm3, xmm1
+
+        ; t - 160
+        movdqu xmm5, [mascara160]
+        movdqu xmm6, [mascara1]
+        paddb xmm5, xmm6
+        psubb xmm3, xmm5
+
+   
+        paddb xmm3, xmm3
+        paddb xmm3, xmm3 
+
+        ; comapre >= 160
+        movdqu xmm2, [mascara128]
+        paddb xmm2, xmm1
+        pcmpgtb xmm2, xmm14 
+
+        ; compare < 224
+        movdqu xmm4, [mascara128]
+        paddb xmm4, xmm1
+        pcmpgtb xmm4, xmm15 
+        pxor xmm4, xmm9 
+
+        pand xmm2, xmm4 ; juntar condiciones
+
+
+        pxor xmm4, xmm4
+        movdqu xmm4, [mascara255]
+        
+        ; otra con 255 en la segunda
+        movdqu xmm5, [mascaraSelecVerde]
+
+        ; le restamos el resultado
+        psubb xmm4, xmm3 
+
+        ; dejamos solo esa componente
+        pand xmm4, xmm5   
+
+        ; ponemos a manopla el 255 del rojo
+        movdqu xmm5, [mascaraSelecRojo]
+        paddb xmm4, xmm5 
+
+        ; ignorar sino cumple el caso y sumar
+        pand xmm4, xmm2
+        paddb xmm7, xmm4
+
+
+        ; caso 5
+        movdqu xmm3, xmm1
+
+        ; t - 224
+        movdqu xmm5, [mascara224]
+        movdqu xmm6, [mascara1]
+        paddb xmm5, xmm6
+        psubb xmm3, xmm5
+
+        paddb xmm3, xmm3
+        paddb xmm3, xmm3 
+
+        ; compare >= 224
+        movdqu xmm2, [mascara128]
+        paddb xmm2, xmm1
+        pcmpgtb xmm2, xmm15
+
+        ; base
+        pxor xmm4, xmm4
+        movdqu xmm4, [mascara255]
+        
+        ; vamos a poner cosas solo en la primer componente, arrancamos con 255
+        movdqu xmm5, [mascaraSelecRojo] 
+
+        ; sub el resultado anterior
+        psubb xmm4, xmm3
+
+        ;dejarlo solo en el rojo
+        pand xmm4, xmm5   
+
+        ; ignorar si no es el caso
+        pand xmm4, xmm2 
+
+        ; result
+        paddb xmm7, xmm4
+                
+
+        ; volvemos a poner el alpha
+            
+        movdqu xmm6, [mascaraPonerAlpha]
+        paddb xmm7, xmm6
+
+        ; guardar en destino con el puntero
+        movq [rsi + r9], xmm7 
+
+        add r9, 8 ; siguientes 2 pixeles y restart
+        sub rcx, 2   
+        jmp loop    
+        
     
-    ; Dividiamos por 3 las sumas para tener t
-    mov ecx, 3
-
-    mov rax, r13
-    xor rdx, rdx
-    div ecx ; div por 3, nos queda t1 en rax
-    mov r13, rax
-
-    mov rax, r14
-    xor rdx, rdx
-    div ecx ; div por 3, nos queda t2 en rax
-    mov r14, rax
-
-    ; ahora tengo el t1 en r13 y el t2 en r14
-
-    ;
-
- 
-    sig_pixeles: ; 
- 
-    add rdi, 8 ; adelante el src 2 pixeles
-    dec r10 ; sig iteracion
-    jmp loop
-
     exit:
-
-    pop r15
-    pop r14
-    pop r13
-    pop r11
-    pop r10
-    pop rbp
-    ret
+        pop rbp
+        ret
